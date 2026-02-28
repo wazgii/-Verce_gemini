@@ -1,6 +1,6 @@
 export default async function handler(req, res) {
   try {
-    console.log("👉 1. 收到请求，原始 URL:", req.url);
+    //console.log("👉 1. 收到请求，原始 URL:", req.url);
 
     // 1. 清理路径，确保拼接给 Google 的路径是正确的
     let targetPath = req.url;
@@ -16,7 +16,7 @@ export default async function handler(req, res) {
     }
 
     const targetUrl = `https://generativelanguage.googleapis.com${targetPath}`;
-    console.log("👉 2. 准备转发给 Google:", targetUrl);
+    //console.log("👉 2. 准备转发给 Google:", targetUrl);
 
     // 2. 组装请求头
     const options = {
@@ -37,10 +37,10 @@ export default async function handler(req, res) {
       options.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
     }
 
-    console.log("👉 3. 正在向 Google 发送请求...");
+    //console.log("👉 3. 正在向 Google 发送请求...");
     const response = await fetch(targetUrl, options);
     
-    console.log("👉 4. Google 返回状态码:", response.status);
+    //console.log("👉 4. Google 返回状态码:", response.status);
     const data = await response.text();
 
     // 5. 返回结果给 n8n
