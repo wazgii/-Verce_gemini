@@ -1,59 +1,86 @@
-export default async function handler(req, res) {
-  try {
-    //console.log("👉 1. 收到请求，原始 URL:", req.url);
+// 开启 Edge Runtime：启动零延迟、支持原生流式透传、大幅突破 10 秒超时限制
+export const config = {
+  runtime: 'edge',
+  regions: ['iad1'], // 固定在美东节点，确保访问 Google API 稳定
+};
 
-    // 1. 清理路径，确保拼接给 Google 的路径是正确的
-    let targetPath = req.url;
-    if (targetPath.startsWith('/api/index')) {
-      targetPath = targetPath.replace('/api/index', '');
-    } else if (targetPath.startsWith('/api')) {
-      targetPath = targetPath.replace('/api', '');
-    }
+export default async function handler(req) {
+  // 处理 CORS 预检请求
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-goog-api-key',
+      },
+    });
+  }
+
+  try {
+    const url = new URL(req.url);
     
-    // 如果路径为空，默认给一个基础路径避免报错
+    // 1. 清理路径并消除多余的双斜杠（修复 //v1beta 问题）
+    let targetPath = url.pathname
+      .replace(/^\/api\/index/, '')
+      .replace(/^\/api/, '')
+      .replace(/\/+/g, '/');
+
     if (!targetPath || targetPath === '/') {
       targetPath = '/v1beta/models';
     }
 
-    const targetUrl = `https://generativelanguage.googleapis.com${targetPath}`;
-    //console.log("👉 2. 准备转发给 Google:", targetUrl);
+    // 保留原始 Query 参数（如 ?key=xxx 或 ?alt=sse）
+    const targetUrl = `https://generativelanguage.googleapis.com${targetPath}${url.search}`;
 
-    // 2. 组装请求头
-    const options = {
+    // 2. 组装请求头（同时兼容 Google 原生节点与 OpenAI 兼容节点）
+    const headers = new Headers();
+    headers.set('Content-Type', req.headers.get('content-type') || 'application/json');
+
+    // 兼容 Google 原生 Header: x-goog-api-key
+    const googApiKey = req.headers.get('x-goog-api-key');
+    if (googApiKey) {
+      headers.set('x-goog-api-key', googApiKey);
+    }
+
+    // 兼容 OpenAI 协议 Header: Authorization: Bearer <API_KEY>
+    const authHeader = req.headers.get('authorization');
+    if (authHeader) {
+      headers.set('Authorization', authHeader);
+    }
+
+    // 3. 转发请求（直接使用 req.body 流，无需手动 JSON.stringify 阻塞内存）
+    const fetchOptions = {
       method: req.method,
-      headers: {
-        'Content-Type': req.headers['content-type'] || 'application/json',
-      }
+      headers: headers,
+      body: (req.method !== 'GET' && req.method !== 'HEAD') ? req.body : undefined,
     };
 
-    // 3. 提取 API Key (支持 Header 和 URL 参数两种方式)
-    const apiKey = req.headers['x-goog-api-key'] || (req.query && req.query.key);
-    if (apiKey) {
-      options.headers['x-goog-api-key'] = apiKey;
-    }
+    const response = await fetch(targetUrl, fetchOptions);
 
-    // 4. 处理 POST 请求体
-    if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
-      options.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-    }
+    // 4. 原生流式返回（直接透传 response.body ReadableStream，拒绝 504 超时）
+    const responseHeaders = new Headers(response.headers);
+    responseHeaders.set('Access-Control-Allow-Origin', '*');
 
-    //console.log("👉 3. 正在向 Google 发送请求...");
-    const response = await fetch(targetUrl, options);
-    
-    //console.log("👉 4. Google 返回状态码:", response.status);
-    const data = await response.text();
-
-    // 5. 返回结果给 n8n
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.status(response.status).send(data);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+    });
 
   } catch (error) {
-    // 终极防崩溃：即使出错，也会返回 JSON 而不是直接 Crash 报 500
-    console.error("❌ 代理运行发生严重错误:", error);
-    res.status(500).json({ 
-      error: "代理内部错误", 
-      message: error.message,
-      stack: error.stack 
-    });
+    return new Response(
+      JSON.stringify({
+        error: '代理内部错误',
+        message: error.message,
+      }),
+      {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    );
   }
 }
